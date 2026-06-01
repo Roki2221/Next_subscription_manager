@@ -1,9 +1,10 @@
 "use client";
 
 import { Loader2, RotateCcw } from "lucide-react";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
 import { TransactionRow } from "@/components/transaction-row";
+import { TransactionsTableSkeleton } from "@/components/transactions-table-skeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,13 +21,11 @@ import {
   useTransactionRetry,
   useTransactions,
 } from "@/features/transactions/hooks";
-import type { Transaction } from "@/features/transactions/types";
-import { useTransactionStore } from "@/store/transaction-store";
+import {
+  useIsBatchRetrying,
+  useTransactionStore,
+} from "@/store/transaction-store";
 
-/**
- * Client orchestrator for the transactions dashboard.
- * Composes React Query (data), Zustand (selection), and presentational rows.
- */
 export function TransactionsTable() {
   const { data: transactions = [], isLoading, isError, error, refetch } =
     useTransactions();
@@ -36,16 +35,14 @@ export function TransactionsTable() {
   const selectedIds = useTransactionStore((state) => state.selectedIds);
   const selectAll = useTransactionStore((state) => state.selectAll);
   const clearSelection = useTransactionStore((state) => state.clearSelection);
-  const retryingIds = useTransactionStore((state) => state.retryingIds);
-
-  const failedTransactions = useMemo(
-    () => transactions.filter((transaction) => transaction.status === "failed"),
-    [transactions],
-  );
+  const isBatchRetrying = useIsBatchRetrying();
 
   const failedIds = useMemo(
-    () => failedTransactions.map((transaction) => transaction.id),
-    [failedTransactions],
+    () =>
+      transactions
+        .filter((transaction) => transaction.status === "failed")
+        .map((transaction) => transaction.id),
+    [transactions],
   );
 
   const allFailedSelected =
@@ -55,34 +52,42 @@ export function TransactionsTable() {
   const someFailedSelected =
     failedIds.some((id) => selectedIds.includes(id)) && !allFailedSelected;
 
-  const isBatchRetrying = selectedIds.some((id) => retryingIds.includes(id));
+  const handleSelectAllFailed = useCallback(
+    (checked: boolean) => {
+      if (checked) {
+        selectAll(failedIds);
+        return;
+      }
 
-  const handleSelectAllFailed = (checked: boolean) => {
-    if (checked) {
-      selectAll(failedIds);
-      return;
-    }
+      clearSelection();
+    },
+    [clearSelection, failedIds, selectAll],
+  );
 
-    clearSelection();
-  };
-
-  const handleRetrySelected = () => {
+  const handleRetrySelected = useCallback(() => {
     void retrySelected(selectedIds);
-  };
+  }, [retrySelected, selectedIds]);
 
-  const handleDownload = (id: string) => {
-    downloadMutation.mutate(id);
-  };
+  const handleDownload = useCallback(
+    (id: string) => {
+      if (downloadMutation.isPending) {
+        return;
+      }
+
+      downloadMutation.mutate(id);
+    },
+    [downloadMutation],
+  );
+
+  const handleRetry = useCallback(
+    (id: string) => {
+      void retrySingle(id);
+    },
+    [retrySingle],
+  );
 
   if (isLoading) {
-    return (
-      <Card>
-        <CardContent className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-          <Loader2 className="animate-spin" aria-hidden="true" />
-          <span role="status">Loading transactions…</span>
-        </CardContent>
-      </Card>
-    );
+    return <TransactionsTableSkeleton />;
   }
 
   if (isError) {
@@ -147,18 +152,20 @@ export function TransactionsTable() {
                         ? "indeterminate"
                         : false
                   }
-                  disabled={failedIds.length === 0}
+                  disabled={failedIds.length === 0 || isBatchRetrying}
                   onCheckedChange={(checked) =>
                     handleSelectAllFailed(checked === true)
                   }
                   aria-label="Select all failed transactions for batch retry"
                 />
               </TableHead>
-              <TableHead>Transaction ID</TableHead>
-              <TableHead>Amount</TableHead>
-              <TableHead>Date</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="w-28">Actions</TableHead>
+              <TableHead scope="col">Transaction ID</TableHead>
+              <TableHead scope="col">Amount</TableHead>
+              <TableHead scope="col">Date</TableHead>
+              <TableHead scope="col">Status</TableHead>
+              <TableHead scope="col" className="w-28">
+                Actions
+              </TableHead>
             </TableRow>
           </TableHeader>
 
@@ -173,12 +180,12 @@ export function TransactionsTable() {
                 </TableCell>
               </TableRow>
             ) : (
-              transactions.map((transaction: Transaction) => (
+              transactions.map((transaction) => (
                 <TransactionRow
                   key={transaction.id}
                   transaction={transaction}
                   onDownload={handleDownload}
-                  onRetry={(id) => void retrySingle(id)}
+                  onRetry={handleRetry}
                   isDownloading={
                     downloadMutation.isPending &&
                     downloadMutation.variables === transaction.id

@@ -7,14 +7,9 @@ import { create } from "zustand";
  * ephemeral UI state that should NOT live in the query cache:
  * - which failed rows are selected for batch retry
  * - which rows are currently mid-retry (independent per-row loaders)
- *
- * Keeping these separate avoids polluting cache keys and makes selection
- * survive refetches without accidental desync.
  */
 interface TransactionStore {
-  /** IDs of failed transactions checked for batch retry. */
   selectedIds: string[];
-  /** IDs currently awaiting a retry API response — one entry per row. */
   retryingIds: string[];
 
   toggleSelected: (id: string) => void;
@@ -73,7 +68,21 @@ export const useTransactionStore = create<TransactionStore>((set) => ({
     })),
 }));
 
-/** Subscribe to a single row's retry loading flag — avoids whole-table re-renders. */
+/** Imperative read — used to guard against duplicate in-flight retries. */
+export function isTransactionRetrying(id: string): boolean {
+  return useTransactionStore.getState().retryingIds.includes(id);
+}
+
+/** True when any selected row is currently being retried (batch toolbar state). */
+export function useIsBatchRetrying(): boolean {
+  return useTransactionStore(
+    (state) =>
+      state.selectedIds.length > 0 &&
+      state.selectedIds.some((id) => state.retryingIds.includes(id)),
+  );
+}
+
+/** Subscribe to a single row's retry loading flag. */
 export function useIsRetrying(id: string): boolean {
   return useTransactionStore((state) => state.retryingIds.includes(id));
 }

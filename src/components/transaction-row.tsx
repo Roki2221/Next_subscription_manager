@@ -1,7 +1,8 @@
 "use client";
 
-import { format } from "date-fns";
+import { format, isValid, parseISO } from "date-fns";
 import { Download, Loader2 } from "lucide-react";
+import { memo, useMemo } from "react";
 
 import { RetryButton } from "@/components/retry-button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +11,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { TableCell, TableRow } from "@/components/ui/table";
 import type { Transaction } from "@/features/transactions/types";
 import { cn } from "@/lib/utils";
-import { useIsRetrying, useIsSelected, useTransactionStore } from "@/store/transaction-store";
+import {
+  useIsRetrying,
+  useIsSelected,
+  useTransactionStore,
+} from "@/store/transaction-store";
 
 interface TransactionRowProps {
   transaction: Transaction;
@@ -34,11 +39,21 @@ const statusVariant: Record<
   pending: "secondary",
 };
 
-/**
- * One table row — subscribes only to its own selection/retry flags via
- * granular Zustand selectors to keep re-renders scoped to affected rows.
- */
-export function TransactionRow({
+const amountFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+});
+
+function formatTransactionDate(isoDate: string): string {
+  const parsed = parseISO(isoDate);
+  if (!isValid(parsed)) {
+    return "Invalid date";
+  }
+
+  return format(parsed, "MMM d, yyyy · HH:mm");
+}
+
+function TransactionRowComponent({
   transaction,
   onDownload,
   onRetry,
@@ -52,11 +67,16 @@ export function TransactionRow({
   const isRetrying = useIsRetrying(id);
   const toggleSelected = useTransactionStore((state) => state.toggleSelected);
 
-  const formattedDate = format(new Date(createdAt), "MMM d, yyyy · HH:mm");
-  const formattedAmount = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(amount);
+  const formattedDate = useMemo(
+    () => formatTransactionDate(createdAt),
+    [createdAt],
+  );
+  const formattedAmount = useMemo(
+    () => amountFormatter.format(amount),
+    [amount],
+  );
+
+  const isActionDisabled = isRetrying || isPending;
 
   return (
     <TableRow
@@ -69,7 +89,7 @@ export function TransactionRow({
             checked={isSelected}
             onCheckedChange={() => toggleSelected(id)}
             aria-label={`Select transaction ${id} for batch retry`}
-            disabled={isRetrying}
+            disabled={isActionDisabled}
           />
         ) : (
           <span className="sr-only">Not selectable</span>
@@ -90,7 +110,7 @@ export function TransactionRow({
           {isPending ? (
             <Loader2 className="animate-spin" aria-hidden="true" />
           ) : null}
-          {statusLabel[status]}
+          <span aria-live="polite">{statusLabel[status]}</span>
         </Badge>
       </TableCell>
 
@@ -100,7 +120,7 @@ export function TransactionRow({
             type="button"
             variant="ghost"
             size="icon-sm"
-            disabled={isDownloading}
+            disabled={isDownloading || isActionDisabled}
             aria-label={
               isDownloading
                 ? `Downloading invoice for transaction ${id}`
@@ -128,3 +148,5 @@ export function TransactionRow({
     </TableRow>
   );
 }
+
+export const TransactionRow = memo(TransactionRowComponent);
