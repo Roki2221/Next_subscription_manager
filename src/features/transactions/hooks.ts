@@ -9,46 +9,59 @@ import {
 import { useCallback } from "react";
 import { toast } from "sonner";
 
+import { triggerBrowserDownload } from "@/lib/download";
 import { retryPaymentsBatch } from "@/lib/retry-payment";
 import {
   isTransactionRetrying,
   useTransactionStore,
 } from "@/store/transaction-store";
 
-import {
-  downloadInvoice,
-  getTransactions,
-  retryTransaction,
-} from "./api";
+import { fetchInvoiceBlob, getTransactions, retryTransaction } from "./api";
 import { transactionQueryKeys, type Transaction } from "./types";
 
-function updateTransactionInCache(
+function mergeRefetchWithRetryingRows(
   queryClient: QueryClient,
-  id: string,
-  updater: (transaction: Transaction) => Transaction,
-) {
-  queryClient.setQueryData<Transaction[]>(
-    transactionQueryKeys.list(),
-    (current) =>
-      current?.map((transaction) =>
-        transaction.id === id ? updater(transaction) : transaction,
-      ),
+  fresh: Transaction[],
+): Transaction[] {
+  const retryingIds = useTransactionStore.getState().retryingIds;
+  if (retryingIds.size === 0) {
+    return fresh;
+  }
+
+  const current =
+    queryClient.getQueryData<Transaction[]>(transactionQueryKeys.list()) ?? [];
+
+  const currentById = new Map(current.map((transaction) => [transaction.id, transaction]));
+
+  return fresh.map((transaction) =>
+    retryingIds.has(transaction.id)
+      ? (currentById.get(transaction.id) ?? transaction)
+      : transaction,
   );
 }
 
 /** Fetches and caches the transaction list. */
 export function useTransactions() {
+  const queryClient = useQueryClient();
+
   return useQuery({
     queryKey: transactionQueryKeys.list(),
-    queryFn: getTransactions,
+    queryFn: async () => {
+      const fresh = await getTransactions();
+      return mergeRefetchWithRetryingRows(queryClient, fresh);
+    },
   });
 }
 
-/** Triggers a mock invoice download for a single transaction. */
+/** Triggers a mock invoice download for a single transaction (concurrent-safe). */
 export function useDownloadInvoice() {
   return useMutation({
-    mutationFn: downloadInvoice,
-    onSuccess: (_data, id) => {
+    mutationFn: fetchInvoiceBlob,
+    onMutate: (id) => {
+      useTransactionStore.getState().addDownloading(id);
+    },
+    onSuccess: (blob, id) => {
+      triggerBrowserDownload(blob, `invoice-${id}.pdf`);
       toast.success("Invoice downloaded successfully", {
         description: `Invoice for transaction ${id} is ready.`,
       });
@@ -61,24 +74,17 @@ export function useDownloadInvoice() {
             : "An unexpected error occurred.",
       });
     },
+    onSettled: (_data, _error, id) => {
+      useTransactionStore.getState().removeDownloading(id);
+    },
   });
 }
 
 /**
- * Retry orchestration with optimistic updates and duplicate-request guards.
+ * Retry orchestration — in-flight state lives in Zustand only; cache holds server truth.
  */
 export function useTransactionRetry() {
   const queryClient = useQueryClient();
-
-  const setTransactionStatus = useCallback(
-    (id: string, status: Transaction["status"]) => {
-      updateTransactionInCache(queryClient, id, (transaction) => ({
-        ...transaction,
-        status,
-      }));
-    },
-    [queryClient],
-  );
 
   const replaceTransaction = useCallback(
     (updated: Transaction) => {
@@ -93,10 +99,6 @@ export function useTransactionRetry() {
     [queryClient],
   );
 
-  /**
-   * Returns IDs that are failed in cache and not already retrying.
-   * Prevents double-submit when batch + single retry overlap or on rapid clicks.
-   */
   const getEligibleRetryIds = useCallback(
     (ids: readonly string[]): string[] => {
       const transactions =
@@ -116,18 +118,14 @@ export function useTransactionRetry() {
     [queryClient],
   );
 
-  const beginRetry = useCallback(
-    (id: string): boolean => {
-      if (isTransactionRetrying(id)) {
-        return false;
-      }
+  const beginRetry = useCallback((id: string): boolean => {
+    if (isTransactionRetrying(id)) {
+      return false;
+    }
 
-      useTransactionStore.getState().addRetrying(id);
-      setTransactionStatus(id, "pending");
-      return true;
-    },
-    [setTransactionStatus],
-  );
+    useTransactionStore.getState().addRetrying(id);
+    return true;
+  }, []);
 
   const finalizeRetry = useCallback((id: string) => {
     useTransactionStore.getState().removeRetrying(id);
@@ -147,7 +145,6 @@ export function useTransactionRetry() {
           description: `Transaction ${id} is now successful.`,
         });
       } catch (error) {
-        setTransactionStatus(id, "failed");
         toast.error("Payment retry failed", {
           description:
             error instanceof Error
@@ -158,7 +155,7 @@ export function useTransactionRetry() {
         finalizeRetry(id);
       }
     },
-    [beginRetry, finalizeRetry, replaceTransaction, setTransactionStatus],
+    [beginRetry, finalizeRetry, replaceTransaction],
   );
 
   const retrySelected = useCallback(
@@ -169,13 +166,14 @@ export function useTransactionRetry() {
         return;
       }
 
-      eligibleIds.forEach((id) => {
+      for (const id of eligibleIds) {
         beginRetry(id);
-      });
+      }
 
       const results = await retryPaymentsBatch(eligibleIds, retryTransaction);
 
       let successCount = 0;
+      const failures: string[] = [];
 
       for (const { id, outcome } of results) {
         if (outcome.status === "fulfilled") {
@@ -183,13 +181,11 @@ export function useTransactionRetry() {
           useTransactionStore.getState().deselect(id);
           successCount += 1;
         } else {
-          setTransactionStatus(id, "failed");
           const message =
             outcome.reason instanceof Error
               ? outcome.reason.message
               : "An unexpected error occurred.";
-
-          toast.error(`Retry failed for ${id}`, { description: message });
+          failures.push(`${id}: ${message}`);
         }
 
         finalizeRetry(id);
@@ -201,15 +197,17 @@ export function useTransactionRetry() {
         );
       }
 
+      if (failures.length === 1) {
+        toast.error("Payment retry failed", { description: failures[0] });
+      } else if (failures.length > 1) {
+        toast.error(`${failures.length} payments failed to retry`, {
+          description: failures.join("\n"),
+        });
+      }
+
       useTransactionStore.getState().clearSelection();
     },
-    [
-      beginRetry,
-      finalizeRetry,
-      getEligibleRetryIds,
-      replaceTransaction,
-      setTransactionStatus,
-    ],
+    [beginRetry, finalizeRetry, getEligibleRetryIds, replaceTransaction],
   );
 
   return { retrySingle, retrySelected };

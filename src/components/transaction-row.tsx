@@ -12,6 +12,7 @@ import { TableCell, TableRow } from "@/components/ui/table";
 import type { Transaction } from "@/features/transactions/types";
 import { cn } from "@/lib/utils";
 import {
+  useIsDownloading,
   useIsRetrying,
   useIsSelected,
   useTransactionStore,
@@ -21,7 +22,6 @@ interface TransactionRowProps {
   transaction: Transaction;
   onDownload: (id: string) => void;
   onRetry: (id: string) => void;
-  isDownloading: boolean;
 }
 
 const statusLabel: Record<Transaction["status"], string> = {
@@ -57,14 +57,14 @@ function TransactionRowComponent({
   transaction,
   onDownload,
   onRetry,
-  isDownloading,
 }: TransactionRowProps) {
   const { id, amount, createdAt, status } = transaction;
   const isFailed = status === "failed";
-  const isPending = status === "pending";
+  const isServerPending = status === "pending";
 
   const isSelected = useIsSelected(id);
   const isRetrying = useIsRetrying(id);
+  const isDownloading = useIsDownloading(id);
   const toggleSelected = useTransactionStore((state) => state.toggleSelected);
 
   const formattedDate = useMemo(
@@ -76,12 +76,15 @@ function TransactionRowComponent({
     [amount],
   );
 
-  const isActionDisabled = isRetrying || isPending;
+  const isActionDisabled = isRetrying || isServerPending;
+  const showStatusSpinner = isRetrying || isServerPending;
+  const displayStatusLabel = isRetrying ? "Retrying" : statusLabel[status];
+  const displayStatusVariant = isRetrying ? "secondary" : statusVariant[status];
 
   return (
     <TableRow
       data-state={isSelected ? "selected" : undefined}
-      aria-busy={isRetrying || isPending}
+      aria-busy={isRetrying || isServerPending || isDownloading}
     >
       <TableCell>
         {isFailed ? (
@@ -104,13 +107,13 @@ function TransactionRowComponent({
 
       <TableCell>
         <Badge
-          variant={statusVariant[status]}
-          className={cn(isPending && "gap-1")}
+          variant={displayStatusVariant}
+          className={cn(showStatusSpinner && "gap-1")}
         >
-          {isPending ? (
+          {showStatusSpinner ? (
             <Loader2 className="animate-spin" aria-hidden="true" />
           ) : null}
-          <span aria-live="polite">{statusLabel[status]}</span>
+          {displayStatusLabel}
         </Badge>
       </TableCell>
 

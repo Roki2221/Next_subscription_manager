@@ -22,7 +22,9 @@ import {
   useTransactions,
 } from "@/features/transactions/hooks";
 import {
+  useFailedSelectionState,
   useIsBatchRetrying,
+  useSelectedCount,
   useTransactionStore,
 } from "@/store/transaction-store";
 
@@ -32,7 +34,7 @@ export function TransactionsTable() {
   const { retrySingle, retrySelected } = useTransactionRetry();
   const downloadMutation = useDownloadInvoice();
 
-  const selectedIds = useTransactionStore((state) => state.selectedIds);
+  const selectedCount = useSelectedCount();
   const selectAll = useTransactionStore((state) => state.selectAll);
   const clearSelection = useTransactionStore((state) => state.clearSelection);
   const isBatchRetrying = useIsBatchRetrying();
@@ -45,12 +47,8 @@ export function TransactionsTable() {
     [transactions],
   );
 
-  const allFailedSelected =
-    failedIds.length > 0 &&
-    failedIds.every((id) => selectedIds.includes(id));
-
-  const someFailedSelected =
-    failedIds.some((id) => selectedIds.includes(id)) && !allFailedSelected;
+  const { allFailedSelected, someFailedSelected } =
+    useFailedSelectionState(failedIds);
 
   const handleSelectAllFailed = useCallback(
     (checked: boolean) => {
@@ -65,12 +63,14 @@ export function TransactionsTable() {
   );
 
   const handleRetrySelected = useCallback(() => {
-    void retrySelected(selectedIds);
-  }, [retrySelected, selectedIds]);
+    void retrySelected([
+      ...useTransactionStore.getState().selectedIds,
+    ]);
+  }, [retrySelected]);
 
   const handleDownload = useCallback(
     (id: string) => {
-      if (downloadMutation.isPending) {
+      if (useTransactionStore.getState().downloadingIds.has(id)) {
         return;
       }
 
@@ -120,8 +120,8 @@ export function TransactionsTable() {
         <Button
           type="button"
           variant="default"
-          disabled={selectedIds.length === 0 || isBatchRetrying}
-          aria-label={`Retry ${selectedIds.length} selected transaction${selectedIds.length === 1 ? "" : "s"}`}
+          disabled={selectedCount === 0 || isBatchRetrying}
+          aria-label={`Retry ${selectedCount} selected transaction${selectedCount === 1 ? "" : "s"}`}
           aria-busy={isBatchRetrying}
           onClick={handleRetrySelected}
         >
@@ -131,15 +131,21 @@ export function TransactionsTable() {
             <RotateCcw aria-hidden="true" />
           )}
           Retry Selected
-          {selectedIds.length > 0 ? (
+          {selectedCount > 0 ? (
             <span className="ml-1 text-primary-foreground/80">
-              ({selectedIds.length})
+              ({selectedCount})
             </span>
           ) : null}
         </Button>
       </CardHeader>
 
       <CardContent>
+        <p className="sr-only" aria-live="polite" aria-atomic="true">
+          {isBatchRetrying
+            ? "Retrying selected transactions"
+            : `${transactions.length} transactions loaded`}
+        </p>
+
         <Table aria-label="Transactions list">
           <TableHeader>
             <TableRow>
@@ -186,10 +192,6 @@ export function TransactionsTable() {
                   transaction={transaction}
                   onDownload={handleDownload}
                   onRetry={handleRetry}
-                  isDownloading={
-                    downloadMutation.isPending &&
-                    downloadMutation.variables === transaction.id
-                  }
                 />
               ))
             )}

@@ -9,8 +9,7 @@ export interface BatchRetryItem {
  * Orchestrates concurrent payment retries without fail-fast behaviour.
  *
  * Promise.all would abort visually on the first rejection; allSettled lets
- * each row resolve independently — matching real payment-gateway batch flows
- * where one card decline must not block retries for other customers.
+ * each row resolve independently — matching real payment-gateway batch flows.
  */
 export async function retryPaymentsBatch(
   ids: readonly string[],
@@ -20,6 +19,6 @@ export async function retryPaymentsBatch(
 
   return ids.map((id, index) => ({
     id,
-    outcome: outcomes[index]!,
+    outcome: outcomes[index] ?? { status: "rejected", reason: new Error("Missing outcome") },
   }));
 }

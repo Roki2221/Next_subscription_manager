@@ -1,16 +1,15 @@
 import { create } from "zustand";
 
 /**
- * Lightweight client state for the transactions dashboard.
+ * Ephemeral UI state for the transactions dashboard.
  *
- * React Query owns server/async data (the transaction list). Zustand owns
- * ephemeral UI state that should NOT live in the query cache:
- * - which failed rows are selected for batch retry
- * - which rows are currently mid-retry (independent per-row loaders)
+ * React Query owns server data (the transaction list). Zustand owns selection,
+ * per-row retry loaders, and per-row download loaders — never duplicated in cache.
  */
 interface TransactionStore {
-  selectedIds: string[];
-  retryingIds: string[];
+  selectedIds: Set<string>;
+  retryingIds: Set<string>;
+  downloadingIds: Set<string>;
 
   toggleSelected: (id: string) => void;
   setSelected: (id: string, selected: boolean) => void;
@@ -20,74 +19,152 @@ interface TransactionStore {
 
   addRetrying: (id: string) => void;
   removeRetrying: (id: string) => void;
+
+  addDownloading: (id: string) => void;
+  removeDownloading: (id: string) => void;
 }
 
 export const useTransactionStore = create<TransactionStore>((set) => ({
-  selectedIds: [],
-  retryingIds: [],
+  selectedIds: new Set(),
+  retryingIds: new Set(),
+  downloadingIds: new Set(),
 
   toggleSelected: (id) =>
-    set((state) => ({
-      selectedIds: state.selectedIds.includes(id)
-        ? state.selectedIds.filter((existingId) => existingId !== id)
-        : [...state.selectedIds, id],
-    })),
+    set((state) => {
+      const selectedIds = new Set(state.selectedIds);
+      if (selectedIds.has(id)) {
+        selectedIds.delete(id);
+      } else {
+        selectedIds.add(id);
+      }
+      return { selectedIds };
+    }),
 
   setSelected: (id, selected) =>
     set((state) => {
+      const selectedIds = new Set(state.selectedIds);
       if (selected) {
-        return state.selectedIds.includes(id)
-          ? state
-          : { selectedIds: [...state.selectedIds, id] };
+        selectedIds.add(id);
+      } else {
+        selectedIds.delete(id);
       }
-
-      return {
-        selectedIds: state.selectedIds.filter((existingId) => existingId !== id),
-      };
+      return { selectedIds };
     }),
 
-  selectAll: (ids) => set({ selectedIds: [...ids] }),
+  selectAll: (ids) => set({ selectedIds: new Set(ids) }),
 
-  clearSelection: () => set({ selectedIds: [] }),
+  clearSelection: () => set({ selectedIds: new Set() }),
 
   deselect: (id) =>
-    set((state) => ({
-      selectedIds: state.selectedIds.filter((existingId) => existingId !== id),
-    })),
+    set((state) => {
+      const selectedIds = new Set(state.selectedIds);
+      selectedIds.delete(id);
+      return { selectedIds };
+    }),
 
   addRetrying: (id) =>
-    set((state) =>
-      state.retryingIds.includes(id)
-        ? state
-        : { retryingIds: [...state.retryingIds, id] },
-    ),
+    set((state) => {
+      if (state.retryingIds.has(id)) {
+        return state;
+      }
+      const retryingIds = new Set(state.retryingIds);
+      retryingIds.add(id);
+      return { retryingIds };
+    }),
 
   removeRetrying: (id) =>
-    set((state) => ({
-      retryingIds: state.retryingIds.filter((existingId) => existingId !== id),
-    })),
+    set((state) => {
+      const retryingIds = new Set(state.retryingIds);
+      retryingIds.delete(id);
+      return { retryingIds };
+    }),
+
+  addDownloading: (id) =>
+    set((state) => {
+      if (state.downloadingIds.has(id)) {
+        return state;
+      }
+      const downloadingIds = new Set(state.downloadingIds);
+      downloadingIds.add(id);
+      return { downloadingIds };
+    }),
+
+  removeDownloading: (id) =>
+    set((state) => {
+      const downloadingIds = new Set(state.downloadingIds);
+      downloadingIds.delete(id);
+      return { downloadingIds };
+    }),
 }));
 
-/** Imperative read — used to guard against duplicate in-flight retries. */
+/** Imperative read — guards against duplicate in-flight retries. */
 export function isTransactionRetrying(id: string): boolean {
-  return useTransactionStore.getState().retryingIds.includes(id);
+  return useTransactionStore.getState().retryingIds.has(id);
 }
 
 /** True when any selected row is currently being retried (batch toolbar state). */
 export function useIsBatchRetrying(): boolean {
-  return useTransactionStore(
-    (state) =>
-      state.selectedIds.length > 0 &&
-      state.selectedIds.some((id) => state.retryingIds.includes(id)),
-  );
+  return useTransactionStore((state) => {
+    if (state.selectedIds.size === 0) {
+      return false;
+    }
+    for (const id of state.selectedIds) {
+      if (state.retryingIds.has(id)) {
+        return true;
+      }
+    }
+    return false;
+  });
 }
 
-/** Subscribe to a single row's retry loading flag. */
 export function useIsRetrying(id: string): boolean {
-  return useTransactionStore((state) => state.retryingIds.includes(id));
+  return useTransactionStore((state) => state.retryingIds.has(id));
 }
 
-/** Subscribe to a single row's selection state. */
 export function useIsSelected(id: string): boolean {
-  return useTransactionStore((state) => state.selectedIds.includes(id));
+  return useTransactionStore((state) => state.selectedIds.has(id));
+}
+
+export function useIsDownloading(id: string): boolean {
+  return useTransactionStore((state) => state.downloadingIds.has(id));
+}
+
+export function useSelectedCount(): number {
+  return useTransactionStore((state) => state.selectedIds.size);
+}
+
+/** Primitives only — avoids new-object selectors that trigger infinite re-renders. */
+export function useFailedSelectionState(failedIds: readonly string[]) {
+  const allFailedSelected = useTransactionStore((state) => {
+    if (failedIds.length === 0) {
+      return false;
+    }
+
+    for (const id of failedIds) {
+      if (!state.selectedIds.has(id)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const someFailedSelected = useTransactionStore((state) => {
+    if (failedIds.length === 0) {
+      return false;
+    }
+
+    let selectedFailedCount = 0;
+    for (const id of failedIds) {
+      if (state.selectedIds.has(id)) {
+        selectedFailedCount += 1;
+      }
+    }
+
+    return (
+      selectedFailedCount > 0 && selectedFailedCount < failedIds.length
+    );
+  });
+
+  return { allFailedSelected, someFailedSelected };
 }

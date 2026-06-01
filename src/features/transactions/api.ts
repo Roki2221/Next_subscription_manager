@@ -1,11 +1,9 @@
-import { triggerBrowserDownload } from "@/lib/download";
-
 import { MOCK_TRANSACTIONS } from "./mocks";
 import type { Transaction } from "./types";
 
 /**
  * Mock API service — simulates network I/O without UI side-effects.
- * Toasts and other presentation concerns belong in hooks/mutations, not here.
+ * Toasts, DOM downloads, and other presentation concerns belong in hooks.
  */
 
 const sleep = (ms: number): Promise<void> =>
@@ -21,12 +19,12 @@ export async function getTransactions(): Promise<Transaction[]> {
   return MOCK_TRANSACTIONS.map((transaction) => ({ ...transaction }));
 }
 
-/** Simulates invoice PDF generation; caller handles success/error toasts. */
-export async function downloadInvoice(id: string): Promise<void> {
+/** Simulates invoice PDF generation; returns blob for the caller to save. */
+export async function fetchInvoiceBlob(transactionId: string): Promise<Blob> {
   await sleep(2000);
-
-  const blob = new Blob(["Invoice PDF"], { type: "application/pdf" });
-  triggerBrowserDownload(blob, `invoice-${id}.pdf`);
+  return new Blob([`Invoice PDF for ${transactionId}`], {
+    type: "application/pdf",
+  });
 }
 
 export async function retryTransaction(id: string): Promise<Transaction> {

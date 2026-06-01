@@ -1,9 +1,8 @@
 /**
  * Browser-only download helper.
  *
- * Kept separate from the mock API layer so invoice generation (Blob creation)
- * stays decoupled from DOM side-effects — easier to swap in a real PDF library
- * or server-generated signed URLs later without touching api.ts call sites.
+ * Kept separate from the API layer so invoice generation stays decoupled from
+ * DOM side-effects — easier to swap in signed URLs or a PDF library later.
  */
 export function triggerBrowserDownload(blob: Blob, filename: string): void {
   const objectUrl = URL.createObjectURL(blob);
@@ -12,7 +11,9 @@ export function triggerBrowserDownload(blob: Blob, filename: string): void {
   anchor.href = objectUrl;
   anchor.download = filename;
   anchor.rel = "noopener";
+  document.body.appendChild(anchor);
   anchor.click();
+  anchor.remove();
 
   URL.revokeObjectURL(objectUrl);
 }
